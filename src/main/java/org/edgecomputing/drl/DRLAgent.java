@@ -30,7 +30,9 @@ public class DRLAgent {
     
     private final double learningRate;
     private final double discountFactor;
-    private final double explorationRate;
+    private double explorationRate;  // Made non-final to allow decay
+    private final double explorationDecay;
+    private final double minExplorationRate;
     private final int batchSize;
     
     private final int stateSize;
@@ -49,10 +51,18 @@ public class DRLAgent {
     
     public DRLAgent(OffloadingEnvironment environment, double learningRate, double discountFactor, 
                    double explorationRate, int batchSize, int replayBufferSize, int targetUpdateFrequency) {
+        this(environment, learningRate, discountFactor, explorationRate, 0.995, 0.01, batchSize, replayBufferSize, targetUpdateFrequency);
+    }
+    
+    public DRLAgent(OffloadingEnvironment environment, double learningRate, double discountFactor, 
+                   double explorationRate, double explorationDecay, double minExplorationRate,
+                   int batchSize, int replayBufferSize, int targetUpdateFrequency) {
         this.environment = environment;
         this.learningRate = learningRate;
         this.discountFactor = discountFactor;
         this.explorationRate = explorationRate;
+        this.explorationDecay = explorationDecay;
+        this.minExplorationRate = minExplorationRate;
         this.batchSize = batchSize;
         this.replayBufferSize = replayBufferSize;
         this.targetUpdateFrequency = targetUpdateFrequency;
@@ -86,15 +96,20 @@ public class DRLAgent {
             .list()
             .layer(0, new DenseLayer.Builder()
                 .nIn(stateSize)
-                .nOut(64)
+                .nOut(128)  // Increased from 64
                 .activation(Activation.RELU)
                 .build())
             .layer(1, new DenseLayer.Builder()
-                .nIn(64)
-                .nOut(32)
+                .nIn(128)
+                .nOut(64)   // Increased from 32
                 .activation(Activation.RELU)
                 .build())
-            .layer(2, new OutputLayer.Builder(LossFunctions.LossFunction.MSE)
+            .layer(2, new DenseLayer.Builder()
+                .nIn(64)
+                .nOut(32)   // Added another layer
+                .activation(Activation.RELU)
+                .build())
+            .layer(3, new OutputLayer.Builder(LossFunctions.LossFunction.MSE)
                 .nIn(32)
                 .nOut(actionSize)
                 .activation(Activation.IDENTITY)
@@ -118,6 +133,20 @@ public class DRLAgent {
         } else {
             return getBestAction(state);
         }
+    }
+    
+    /**
+     * Decay the exploration rate
+     */
+    public void decayExplorationRate() {
+        explorationRate = Math.max(minExplorationRate, explorationRate * explorationDecay);
+    }
+    
+    /**
+     * Get the current exploration rate
+     */
+    public double getExplorationRate() {
+        return explorationRate;
     }
     
     /**
@@ -168,6 +197,7 @@ public class DRLAgent {
         INDArray actions = Nd4j.create(batchSize);
         INDArray rewards = Nd4j.create(batchSize);
         INDArray nextStates = Nd4j.create(batchSize, stateSize);
+        INDArray dones = Nd4j.create(batchSize);
         
         // Fill arrays with batch data
         for (int i = 0; i < batchSize; i++) {
@@ -176,6 +206,7 @@ public class DRLAgent {
             actions.putScalar(i, exp.getAction());
             rewards.putScalar(i, exp.getReward());
             nextStates.putRow(i, Nd4j.create(exp.getNextState()));
+            dones.putScalar(i, exp.isDone() ? 1.0 : 0.0);
         }
         
         // Get current Q-values for all actions
@@ -187,11 +218,14 @@ public class DRLAgent {
         // Max Q-value for next state
         INDArray maxNextQ = nextQValues.max(1);
         
-        // Create target Q-values (y_j = r_j + gamma * max_a' Q(s',a'))
+        // Create target Q-values (y_j = r_j + gamma * max_a' Q(s',a') * (1 - done))
         INDArray targetQValues = currentQValues.dup();
         for (int i = 0; i < batchSize; i++) {
             int action = actions.getInt(i);
-            double targetValue = rewards.getDouble(i) + discountFactor * maxNextQ.getDouble(i);
+            double targetValue = rewards.getDouble(i);
+            if (dones.getDouble(i) == 0.0) { // Not done
+                targetValue += discountFactor * maxNextQ.getDouble(i);
+            }
             targetQValues.putScalar(i, action, targetValue);
         }
         
@@ -202,7 +236,7 @@ public class DRLAgent {
         updateCounter++;
         if (updateCounter % targetUpdateFrequency == 0) {
             targetNetwork.setParameters(qNetwork.params());
-            System.out.println("Target network updated at step " + totalSteps);
+            System.out.println("Target network updated at step " + totalSteps + ", exploration rate: " + String.format("%.4f", explorationRate));
         }
     }
     

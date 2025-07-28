@@ -84,14 +84,16 @@ public class OffloadingSimulation {
         // Create DRL agent
         double learningRate = Double.parseDouble(config.getProperty("learning_rate", "0.001"));
         double discountFactor = Double.parseDouble(config.getProperty("discount_factor", "0.95"));
-        double explorationRate = Double.parseDouble(config.getProperty("exploration_rate", "0.1"));
-        int batchSize = Integer.parseInt(config.getProperty("batch_size", "32"));
-        int replayMemorySize = Integer.parseInt(config.getProperty("replay_memory_size", "10000"));
-        int targetUpdateFreq = Integer.parseInt(config.getProperty("target_update_frequency", "100"));
+        double explorationRate = Double.parseDouble(config.getProperty("exploration_rate", "0.05"));
+        double explorationDecay = Double.parseDouble(config.getProperty("exploration_decay", "0.999"));
+        double minExplorationRate = Double.parseDouble(config.getProperty("min_exploration_rate", "0.01"));
+        int batchSize = Integer.parseInt(config.getProperty("batch_size", "64"));
+        int replayMemorySize = Integer.parseInt(config.getProperty("replay_memory_size", "20000"));
+        int targetUpdateFreq = Integer.parseInt(config.getProperty("target_update_frequency", "50"));
         
         this.drlAgent = new DRLAgent(
             environment, learningRate, discountFactor, explorationRate,
-            batchSize, replayMemorySize, targetUpdateFreq
+            explorationDecay, minExplorationRate, batchSize, replayMemorySize, targetUpdateFreq
         );
         
         // Initialize metrics collection
@@ -214,10 +216,13 @@ public class OffloadingSimulation {
             // Train the DRL network
             drlAgent.trainNetwork();
             
+            // Decay exploration rate
+            drlAgent.decayExplorationRate();
+            
             // Log progress
             if (episode % 10 == 0) {
-                System.out.printf("Episode %d/%d - Reward: %.2f - Avg Reward: %.4f\n",
-                    episode, trainingEpisodes, episodeReward, drlAgent.getAverageReward());
+                System.out.printf("Episode %d/%d - Reward: %.2f - Avg Reward: %.4f - Epsilon: %.4f\n",
+                    episode, trainingEpisodes, episodeReward, drlAgent.getAverageReward(), drlAgent.getExplorationRate());
             }
         }
         

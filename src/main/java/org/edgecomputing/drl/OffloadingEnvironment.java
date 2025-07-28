@@ -106,6 +106,7 @@ public class OffloadingEnvironment {
         double latency = 0.0;
         double energy = 0.0;
         double loadBalance = 0.0;
+        boolean validAction = true;
         
         if (action == 0) {
             // Execute locally
@@ -120,32 +121,34 @@ public class OffloadingEnvironment {
             
             // Check if device is in coverage of the edge server
             if (!server.isDeviceInCoverage(device)) {
-                return -100.0;  // Large negative reward for invalid action
+                validAction = false;
+                latency = task.getDeadline() * 2; // Penalty for invalid action
+                energy = 0.0;
+            } else {
+                // Calculate transmission latency
+                double transmissionLatency = (task.getInputDataSize() * 8) / (mobileBandwidth * 1000);
+                double receptionLatency = (task.getOutputDataSize() * 8) / (mobileBandwidth * 1000);
+                
+                // Calculate processing latency
+                double processingLatency = server.calculateTaskExecutionTime(task);
+                
+                // Total latency including network delay
+                latency = transmissionLatency + processingLatency + receptionLatency + (2 * mobileToEdgeLatency / 1000.0);
+                
+                // Calculate energy consumption
+                energy = device.calculateOffloadingEnergy(task, server.getBandwidth());
+                
+                // Update task and device info
+                task.setExecutionLocation(IoTTask.TaskLocation.EDGE_SERVER);
+                device.recordTaskExecution(task, energy);
+                
+                // Update edge server info
+                server.receiveTask();
+                server.completeTask(task, processingLatency, server.calculateExecutionEnergy(task));
+                
+                // Calculate load balance factor (standard deviation of loads across edge servers)
+                loadBalance = calculateLoadBalanceFactor();
             }
-            
-            // Calculate transmission latency
-            double transmissionLatency = (task.getInputDataSize() * 8) / (mobileBandwidth * 1000);
-            double receptionLatency = (task.getOutputDataSize() * 8) / (mobileBandwidth * 1000);
-            
-            // Calculate processing latency
-            double processingLatency = server.calculateTaskExecutionTime(task);
-            
-            // Total latency including network delay
-            latency = transmissionLatency + processingLatency + receptionLatency + (2 * mobileToEdgeLatency / 1000.0);
-            
-            // Calculate energy consumption
-            energy = device.calculateOffloadingEnergy(task, server.getBandwidth());
-            
-            // Update task and device info
-            task.setExecutionLocation(IoTTask.TaskLocation.EDGE_SERVER);
-            device.recordTaskExecution(task, energy);
-            
-            // Update edge server info
-            server.receiveTask();
-            server.completeTask(task, processingLatency, server.calculateExecutionEnergy(task));
-            
-            // Calculate load balance factor (standard deviation of loads across edge servers)
-            loadBalance = calculateLoadBalanceFactor();
             
         } else {
             // Execute on cloud
@@ -180,20 +183,39 @@ public class OffloadingEnvironment {
         // Update task timing information
         task.setFinishTime(task.getStartTime() + latency);
         
-        // Calculate normalized metrics
-        double normalizedLatency = Math.min(1.0, latency / 10.0); // Normalize to [0,1] assuming max latency is 10s
-        double normalizedEnergy = Math.min(1.0, energy / 5.0);    // Normalize to [0,1] assuming max energy is 5J
+        // Calculate reward based on deadline compliance and performance
+        double reward = 0.0;
         
-        // Calculate reward (negative since we want to minimize these values)
-        double reward = -(latencyWeight * normalizedLatency +
-                        energyWeight * normalizedEnergy +
-                        loadBalanceWeight * loadBalance);
-        
-        // Add bonus if completed within deadline
-        if (task.isCompletedOnTime()) {
-            reward += 1.0;
+        if (validAction) {
+            // Check if task meets deadline
+            boolean meetsDeadline = latency <= task.getDeadline();
+            
+            // Base reward for successful completion
+            if (meetsDeadline) {
+                reward += 10.0; // Bonus for meeting deadline
+                
+                // Additional reward based on performance
+                double normalizedLatency = Math.min(1.0, latency / task.getDeadline());
+                double normalizedEnergy = Math.min(1.0, energy / 5.0);
+                
+                // Reward decreases with higher latency and energy
+                reward += (1.0 - normalizedLatency) * 5.0; // Up to 5 points for low latency
+                reward += (1.0 - normalizedEnergy) * 3.0;  // Up to 3 points for low energy
+                
+                // Load balance reward
+                reward += (1.0 - loadBalance) * 2.0; // Up to 2 points for good load balance
+                
+            } else {
+                // Penalty for missing deadline
+                reward -= 5.0;
+                
+                // Additional penalty based on how much deadline was missed
+                double deadlineMissRatio = (latency - task.getDeadline()) / task.getDeadline();
+                reward -= deadlineMissRatio * 10.0;
+            }
         } else {
-            reward -= 0.5;
+            // Large penalty for invalid action
+            reward -= 20.0;
         }
         
         return reward;
