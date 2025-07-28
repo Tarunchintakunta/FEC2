@@ -14,6 +14,8 @@ import org.edgecomputing.simulation.OffloadingCloudSim;
 
 import java.util.*;
 import java.util.concurrent.ThreadLocalRandom;
+import java.util.Arrays;
+import java.util.ArrayList;
 
 /**
  * Main simulation class that orchestrates the task offloading simulation
@@ -283,7 +285,7 @@ public class OffloadingSimulation {
     }
     
     /**
-     * Run a single simulation episode using CloudSim Plus event-driven approach
+     * Run a single simulation episode using direct task processing
      * @return Total reward accumulated in the episode
      */
     private double runEpisode() {
@@ -308,19 +310,42 @@ public class OffloadingSimulation {
             simulation.addProperty("task_min_output_size", ConfigUtils.getProperty("task_min_output_size", "1"));
             simulation.addProperty("task_max_output_size", ConfigUtils.getProperty("task_max_output_size", "100"));
             
-            // Schedule initial tasks based on task arrival rate
-            int numInitialTasks = (int)(simulationTime * taskArrivalRate * 0.1); // Schedule ~10% of total tasks initially
-            numInitialTasks = Math.max(10, numInitialTasks); // At least 10 tasks to start with
+            // Calculate expected number of tasks based on simulation time and arrival rate
+            int expectedTasks = (int)(simulationTime * taskArrivalRate * devices.size());
+            System.out.println("Expected tasks for this episode: " + expectedTasks);
             
-            // Initialize task generation for each device
-            for (IoTDevice device : devices) {
-                // Schedule initial task generation with random delays to avoid all devices generating tasks simultaneously
-                double initialDelay = getNextArrivalTime(taskArrivalRate) * random.nextDouble();
-                broker.scheduleTaskGeneration(device, taskArrivalRate);
+            // Process tasks directly without CloudSim events
+            int tasksProcessed = 0;
+            double currentTime = 0.0;
+            
+            while (currentTime < simulationTime && tasksProcessed < expectedTasks) {
+                // Generate tasks for each device
+                for (IoTDevice device : devices) {
+                    // Check if it's time to generate a task for this device
+                    double nextTaskTime = getNextArrivalTime(taskArrivalRate);
+                    if (currentTime >= nextTaskTime) {
+                        // Generate a task for this device
+                        IoTTask task = generateTask(device);
+                        task.setStartTime(currentTime);
+                        
+                        // Process the task immediately
+                        processTaskDirectly(broker, task, device);
+                        
+                        tasksProcessed++;
+                        totalTasks++; // Increment the total tasks counter
+                        totalReward += task.getReward();
+                        
+                        if (tasksProcessed >= expectedTasks) {
+                            break;
+                        }
+                    }
+                }
+                
+                // Advance simulation time
+                currentTime += 0.1; // Small time step
             }
             
-            // Start the simulation
-            simulation.start();
+            System.out.println("Processed " + tasksProcessed + " tasks in episode");
             
             // Collect metrics and rewards after simulation completes
             for (IoTDevice device : devices) {
@@ -328,7 +353,6 @@ public class OffloadingSimulation {
                 if (!isTrainingPhase) {
                     for (IoTTask task : device.getCompletedTasks()) {
                         collectMetrics(task);
-                        totalReward += task.getReward();
                     }
                 }
             }
@@ -339,6 +363,32 @@ public class OffloadingSimulation {
         }
         
         return totalReward;
+    }
+    
+    /**
+     * Process a task directly without CloudSim events
+     */
+    private void processTaskDirectly(OffloadingDatacenterBroker broker, IoTTask task, IoTDevice device) {
+        try {
+            // Get the current state from the environment
+            double[] state = environment.getState(device, task);
+            
+            // Use DRL agent to choose action (offloading decision)
+            int action = drlAgent.chooseAction(state);
+            
+            // Execute action by processing the task
+            broker.processTaskDirectly(task, device, action);
+            
+            // If in training phase, store experience for learning
+            if (isTrainingPhase) {
+                double[] nextState = environment.getState(device, task);
+                drlAgent.storeExperience(state, action, task.getReward(), nextState, false);
+            }
+            
+        } catch (Exception e) {
+            System.err.println("Error processing task: " + e.getMessage());
+            e.printStackTrace();
+        }
     }
     
     /**

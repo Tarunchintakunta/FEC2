@@ -28,10 +28,10 @@ public class PerformanceMetrics {
     private final Map<String, List<Double>> serverLatencyMap;
     
     public PerformanceMetrics() {
-        reset();
         latencyValues = new ArrayList<>();
         energyValues = new ArrayList<>();
         serverLatencyMap = new HashMap<>();
+        reset();
     }
     
     /**
@@ -76,8 +76,14 @@ public class PerformanceMetrics {
             case EDGE_SERVER:
                 edgeExecutionCount++;
                 // Record per-server latency if needed
-                String serverName = "Edge" + (task.getCloudlet().getVm().getHost().getId() + 1);
-                serverLatencyMap.computeIfAbsent(serverName, k -> new ArrayList<>()).add(latency);
+                if (task.getCloudlet() != null && task.getCloudlet().getVm() != null) {
+                    String serverName = "Edge" + (task.getCloudlet().getVm().getHost().getId() + 1);
+                    serverLatencyMap.computeIfAbsent(serverName, k -> new ArrayList<>()).add(latency);
+                } else {
+                    // Fallback for tasks processed directly without CloudSim cloudlets
+                    String serverName = "EdgeServer";
+                    serverLatencyMap.computeIfAbsent(serverName, k -> new ArrayList<>()).add(latency);
+                }
                 break;
                 
             case CLOUD:
